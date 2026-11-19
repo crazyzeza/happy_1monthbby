@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Happy 1 Month – Z + A</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; cursor: none; touch-action: none; }
+  #ui { position: fixed; top: 12px; right: 12px; display: flex; gap: 8px; z-index: 5; }
+  #ui button { background: rgba(120,80,255,.12); color: #cdb8ff; border: 1px solid rgba(154,107,255,.5);
+               border-radius: 8px; padding: 6px 12px; font: 14px Consolas, monospace; cursor: pointer;
+               opacity: .45; transition: opacity .2s; }
+  #ui button:hover { opacity: 1; }
+  #tip { position: fixed; left: 12px; bottom: 10px; color: rgba(184,155,255,.4);
+         font: 12px Consolas, monospace; z-index: 5; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <button id="bMinus" title="Smaller (-)">&minus;</button>
+  <button id="bPlus" title="Bigger (+)">+</button>
+  <button id="bFull" title="Fullscreen (F)">Fullscreen</button>
+</div>
+<div id="tip">F = fullscreen &nbsp;·&nbsp; + / &minus; or mouse wheel = size</div>
+
+<script>
+/* ===================== CONFIG ===================== */
+const W = 600, H = 640;
+const CELL = 7;                    // character cell size (smaller = denser)
+const RAMP = "`.-:;+=*%&#@$";      // dark -> bright
+const GLYPHS = "01&%$#@*+=-:;<>/\\|[]{}";
+
+const ASSEMBLE = 3.2;              // seconds for characters to form the envelope
+const BURN_DUR = 3.6;              // how long the fire takes to spread over the letter
+const ENV = { x0: 70, x1: 530, y0: 130, y1: 450 };   // envelope area (click zone)
+const MOUSE_RADIUS = 48;           // how far the cursor pushes characters away
+const PURPLE = "#9a6bff";
+
+const TEXT1 = "happy 1 month";
+const TEXT2 = "Z + A";
+
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+const off = document.createElement("canvas");
+off.width = W; off.height = H;
+const octx = off.getContext("2d", { willReadFrequently: true });
+
+/* ===================== HELPERS ===================== */
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = t => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
+const easeOut = t => 1 - Math.pow(1 - t, 3);
+const easeOutBack = t => { const c1 = 2.2, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+let seed = 20240519;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+
+/* ===================== SCENE DRAWINGS (offscreen) ===================== */
+function drawEnvelope(g) {
+  g.clearRect(0, 0, W, H);
+  const { x0, x1, y0, y1 } = ENV, cx = 300, jy = 318;     // jy = where the folds meet
+  g.lineJoin = "round"; g.lineCap = "round";
+  // paper
+  let gr = g.createLinearGradient(0, y0, 0, y1);
+  gr.addColorStop(0, "#f3cc92"); gr.addColorStop(1, "#d89a5c");
+  g.fillStyle = gr; g.fillRect(x0, y0, x1 - x0, y1 - y0);
+  // side + bottom flaps, slightly darker for depth
+  g.fillStyle = "#c98a4e";
+  g.beginPath(); g.moveTo(x0, y0); g.lineTo(cx, jy); g.lineTo(x0, y1); g.closePath(); g.fill();
+  g.beginPath(); g.moveTo(x1, y0); g.lineTo(cx, jy); g.lineTo(x1, y1); g.closePath(); g.fill();
+  g.fillStyle = "#b8793f";
+  g.beginPath(); g.moveTo(x0, y1); g.lineTo(cx, jy); g.lineTo(x1, y1); g.closePath(); g.fill();
+  // top flap, lighter
+  gr = g.createLinearGradient(0, y0, 0, jy + 14);
+  gr.addColorStop(0, "#ffe6b8"); gr.addColorStop(1, "#eab777");
+  g.fillStyle = gr;
+  g.beginPath(); g.moveTo(x0, y0); g.lineTo(cx, jy + 14); g.lineTo(x1, y0); g.closePath(); g.fill();
+  // fold lines
+  g.strokeStyle = "#5a3418"; g.lineWidth = 6;
+  g.beginPath();
+  g.moveTo(x0, y1); g.lineTo(cx, jy); g.lineTo(x1, y1);
+  g.moveTo(x0, y0); g.lineTo(x0, y1); g.moveTo(x1, y0); g.lineTo(x1, y1);
+  g.stroke();
+  g.lineWidth = 8;
+  g.beginPath(); g.moveTo(x0, y0); g.lineTo(cx, jy + 14); g.lineTo(x1, y0); g.stroke();
+  g.lineWidth = 7; g.strokeRect(x0, y0, x1 - x0, y1 - y0);
+  // stitched border
+  g.setLineDash([14, 11]); g.strokeStyle = "#7a4a22"; g.lineWidth = 4;
+  g.strokeRect(x0 + 18, y0 + 18, x1 - x0 - 36, y1 - y0 - 36);
+  g.setLineDash([]);
+  // wax seal with a heart
+  const sy = 326;
+  const sg = g.createRadialGradient(cx - 12, sy - 14, 4, cx, sy, 42);
+  sg.addColorStop(0, "#ff86ad"); sg.addColorStop(0.55, "#e0245e"); sg.addColorStop(1, "#8a0f35");
+  g.fillStyle = sg; g.beginPath(); g.arc(cx, sy, 40, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = "#ffb6cc"; g.lineWidth = 4; g.beginPath(); g.arc(cx, sy, 40, 0, Math.PI * 2); g.stroke();
+  drawHeart(g, cx, sy - 2, 14, "#ffd6e2");
+  // title
+  g.fillStyle = "#3b1d0a"; g.font = "italic bold 80px Georgia, 'Times New Roman', serif";
+  g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("FOR YOU", cx, 410);
+}
+
+// one shaded petal: light rim on top, dark at the base, dark outline, soft rim highlight
+function petal(g, x, y, w, h, rot, cTop, cBot) {
+  g.save(); g.translate(x, y); g.rotate(rot);
+  const gr = g.createLinearGradient(0, -h * 0.55, 0, h * 0.5);
+  gr.addColorStop(0, cTop); gr.addColorStop(1, cBot);
+  g.beginPath();
+  g.moveTo(-w * 0.5, h * 0.5);
+  g.bezierCurveTo(-w * 0.78, -h * 0.1, -w * 0.45, -h * 0.6, 0, -h * 0.55);
+  g.bezierCurveTo(w * 0.45, -h * 0.6, w * 0.78, -h * 0.1, w * 0.5, h * 0.5);
+  g.closePath();
+  g.fillStyle = gr; g.fill();
+  g.strokeStyle = "#22030a"; g.lineWidth = 8; g.stroke();            // dark shadow line
+  g.strokeStyle = "#ff7a8c"; g.lineWidth = 4; g.stroke();            // bright petal edge
+  g.strokeStyle = "#ffc2ca"; g.lineWidth = 4.5;                      // glowing rim on the top
+  g.beginPath(); g.moveTo(-w * 0.36, -h * 0.2); g.quadraticCurveTo(0, -h * 0.66, w * 0.36, -h * 0.2); g.stroke();
+  g.strokeStyle = "rgba(255,150,162,0.75)"; g.lineWidth = 2.5;       // petal veins
+  g.beginPath();
+  g.moveTo(-w * 0.18, h * 0.42); g.quadraticCurveTo(-w * 0.3, h * 0.05, -w * 0.12, -h * 0.3);
+  g.moveTo(w * 0.18, h * 0.42); g.quadraticCurveTo(w * 0.3, h * 0.05, w * 0.12, -h * 0.3);
+  g.stroke();
+  g.restore();
+}
+
+// pointed green leaf with midrib and side veins
+function leaf(g, x, y, ang, L, wd) {
+  g.save(); g.translate(x, y); g.rotate(ang);
+  const gr = g.createLinearGradient(0, 0, L, 0);
+  gr.addColorStop(0, "#1f6b36"); gr.addColorStop(1, "#63d680");
+  g.beginPath(); g.moveTo(0, 0);
+  g.quadraticCurveTo(L * 0.45, -wd, L, 0);
+  g.quadraticCurveTo(L * 0.45, wd, 0, 0);
+  g.fillStyle = gr; g.fill();
+  g.strokeStyle = "#0f3a1e"; g.lineWidth = 7; g.stroke();
+  g.strokeStyle = "#8ff5aa"; g.lineWidth = 3.5; g.stroke();
+  g.strokeStyle = "#d9ffe4"; g.lineWidth = 4; g.beginPath(); g.moveTo(4, 0); g.lineTo(L * 0.92, 0); g.stroke();
+  g.lineWidth = 3; g.strokeStyle = "rgba(190,255,210,0.9)";
+  for (let i = 1; i <= 3; i++) {
+    const vx = L * 0.2 * i, vy = wd * 0.5 * (1 - i * 0.18);
+    g.beginPath(); g.moveTo(vx, 0); g.lineTo(vx + L * 0.14, -vy); g.moveTo(vx, 0); g.lineTo(vx + L * 0.14, vy); g.stroke();
+  }
+  g.restore();
+}
+
+function drawRose(g) {
+  g.clearRect(0, 0, W, H);
+  const HX = 300, HY = 150;                         // center of the bloom
+  g.lineJoin = "round"; g.lineCap = "round";
+
+  // ----- stem (dark edge, green body, light highlight) -----
+  const stem = () => { g.beginPath(); g.moveTo(HX, HY + 70); g.bezierCurveTo(HX - 14, HY + 130, HX + 16, HY + 190, HX - 2, HY + 255); };
+  stem(); g.strokeStyle = "#16482a"; g.lineWidth = 18; g.stroke();
+  stem(); g.strokeStyle = "#3fa655"; g.lineWidth = 12; g.stroke();
+  g.save(); g.translate(-3, 0); stem(); g.strokeStyle = "#c8ffd6"; g.lineWidth = 4; g.stroke(); g.restore();
+  // thorns
+  g.fillStyle = "#1d6b35";
+  g.beginPath(); g.moveTo(HX + 5, HY + 148); g.lineTo(HX + 22, HY + 140); g.lineTo(HX + 7, HY + 162); g.closePath(); g.fill();
+  g.beginPath(); g.moveTo(HX - 7, HY + 196); g.lineTo(HX - 24, HY + 187); g.lineTo(HX - 9, HY + 209); g.closePath(); g.fill();
+
+  // ----- leaves -----
+  leaf(g, HX - 4, HY + 178, Math.PI + 0.5, 100, 30);
+  leaf(g, HX + 6, HY + 218, -0.55, 90, 28);
+
+  // ----- sepals under the bloom -----
+  for (const i of [-1, 0, 1]) {
+    g.save(); g.translate(HX + i * 20, HY + 66); g.rotate(-i * 0.6);
+    g.beginPath(); g.moveTo(-8, 0); g.quadraticCurveTo(-10, 28, 0, 52); g.quadraticCurveTo(10, 28, 8, 0); g.closePath();
+    g.fillStyle = "#2f8a47"; g.fill(); g.strokeStyle = "#8ff5aa"; g.lineWidth = 3; g.stroke();
+    g.restore();
+  }
+
+  // ----- bloom: back ring (darkest) -----
+  for (let i = -2; i <= 2; i++) petal(g, HX + i * 30, HY - 4 + Math.abs(i) * 13, 100, 112, i * 0.5, "#a3121f", "#3a0510");
+  // middle ring
+  for (let i = -2; i <= 2; i++) petal(g, HX + i * 26, HY + 8 + Math.abs(i) * 8, 92, 98, i * 0.38, "#d41e34", "#5a0812");
+
+  // cup under the front petals
+  const cg = g.createLinearGradient(0, HY + 10, 0, HY + 96);
+  cg.addColorStop(0, "#a8121f"); cg.addColorStop(1, "#4a0510");
+  g.beginPath(); g.ellipse(HX, HY + 50, 70, 44, 0, 0, Math.PI * 2);
+  g.fillStyle = cg; g.fill(); g.strokeStyle = "#3a050e"; g.lineWidth = 3; g.stroke();
+
+  // inner curled petals
+  for (let k = 0; k < 5; k++) {
+    const odd = k % 2 === 1;
+    petal(g, HX + (odd ? 6 : -6), HY - 12 + k * 4, 74 - k * 9, 62 - k * 8, odd ? 0.25 : -0.25,
+          odd ? "#f0485c" : "#d02238", odd ? "#8e1020" : "#6a0a16");
+  }
+  // spiral swirl in the heart of the rose (dark line + light highlight)
+  const spiral = (dx, dy, color, lw) => {
+    g.beginPath();
+    for (let a = 0, first = true; a < Math.PI * 4; a += 0.25, first = false) {
+      const r = 3 + a * 2.6, x = HX + dx + Math.cos(a) * r, y = HY - 6 + dy + Math.sin(a) * r * 0.7;
+      first ? g.moveTo(x, y) : g.lineTo(x, y);
+    }
+    g.strokeStyle = color; g.lineWidth = lw; g.stroke();
+  };
+  spiral(0, 0, "#22030a", 7);
+  spiral(-1, -1, "#ffb3bd", 3.5);
+
+  // front petals wrapping the bloom
+  petal(g, HX - 42, HY + 38, 94, 90, -0.55, "#ef4a5e", "#8a0e1c");
+  petal(g, HX + 42, HY + 38, 94, 90, 0.55, "#e63a50", "#7e0c1a");
+  petal(g, HX, HY + 60, 106, 78, 0, "#f2566a", "#8e1020");
+
+  // dew drops (bright white dots become sparkling characters)
+  const drop = (x, y, rr) => {
+    g.fillStyle = "rgba(255,255,255,0.97)"; g.beginPath(); g.arc(x, y, rr, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = "rgba(120,10,30,0.85)"; g.lineWidth = 2; g.beginPath(); g.arc(x, y + 1, rr + 1.5, 0.2, Math.PI - 0.2); g.stroke();
+  };
+  drop(HX - 36, HY - 34, 6); drop(HX + 38, HY - 14, 5); drop(HX - 16, HY + 44, 5.5);
+  drop(HX + 22, HY + 60, 5); drop(HX + 4, HY - 52, 4.5);
+
+  // soft light on the upper left of the bloom
+  const hl = g.createRadialGradient(HX - 28, HY - 34, 4, HX - 28, HY - 34, 46);
+  hl.addColorStop(0, "rgba(255,215,215,0.5)"); hl.addColorStop(1, "rgba(255,215,215,0)");
+  g.fillStyle = hl; g.fillRect(HX - 90, HY - 100, 140, 140);
+}
+
+function drawHeart(g, cx, cy, size, color) {
+  g.fillStyle = color;
+  g.beginPath();
+  g.moveTo(cx, cy + size * 0.9);
+  g.bezierCurveTo(cx - size * 1.5, cy - size * 0.1, cx - size * 0.8, cy - size * 1.2, cx, cy - size * 0.4);
+  g.bezierCurveTo(cx + size * 0.8, cy - size * 1.2, cx + size * 1.5, cy - size * 0.1, cx, cy + size * 0.9);
+  g.fill();
+}
+
+// glossy gem-style heart: dark shadow, red gradient, bright edge, white shine
+function drawSwagHeart(g, cx, cy, sz) {
+  const path = () => {
+    g.beginPath(); g.moveTo(cx, cy + sz * 0.9);
+    g.bezierCurveTo(cx - sz * 1.5, cy - sz * 0.1, cx - sz * 0.8, cy - sz * 1.2, cx, cy - sz * 0.4);
+    g.bezierCurveTo(cx + sz * 0.8, cy - sz * 1.2, cx + sz * 1.5, cy - sz * 0.1, cx, cy + sz * 0.9);
+    g.closePath();
+  };
+  g.lineJoin = "round"; g.lineCap = "round";
+  path(); g.strokeStyle = "#2a020a"; g.lineWidth = 11; g.stroke();            // dark shadow edge
+  const gr = g.createRadialGradient(cx - sz * 0.35, cy - sz * 0.55, sz * 0.1, cx, cy, sz * 1.2);
+  gr.addColorStop(0, "#ff8fa6"); gr.addColorStop(0.45, "#ff2a4a"); gr.addColorStop(1, "#9c0f2a");
+  path(); g.fillStyle = gr; g.fill();
+  path(); g.strokeStyle = "#ffb8c6"; g.lineWidth = 4; g.stroke();             // bright edge
+  g.fillStyle = "rgba(255,255,255,0.95)";                                     // glossy shine
+  g.beginPath(); g.ellipse(cx - sz * 0.52, cy - sz * 0.42, sz * 0.3, sz * 0.15, -0.7, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.arc(cx - sz * 0.15, cy - sz * 0.62, sz * 0.08, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = "rgba(255,200,210,0.85)"; g.lineWidth = 3;                  // small glint on the right lobe
+  g.beginPath(); g.moveTo(cx + sz * 0.35, cy - sz * 0.55); g.quadraticCurveTo(cx + sz * 0.72, cy - sz * 0.5, cx + sz * 0.78, cy - sz * 0.1); g.stroke();
+}
+
+// heartOnly = false -> draws the words; heartOnly = true -> draws just the heart (sampled separately)
+function drawText(g, heartOnly = false) {
+  g.clearRect(0, 0, W, H);
+  g.textBaseline = "middle";
+  g.font = "italic bold 66px Georgia, 'Times New Roman', serif";
+  g.textAlign = "left";
+  const hs = 28, gap = 16, oneW = 38;
+  const wA = g.measureText("happy ").width;
+  const wB = g.measureText(" month").width;
+  const total = wA + oneW + wB + gap + hs * 1.9;
+  const x0 = 300 - total / 2;
+  HEART.x = x0 + wA + oneW + wB + gap + hs * 0.95; HEART.y = 470;
+  if (heartOnly) { drawSwagHeart(g, HEART.x, HEART.y, hs); return; }
+  g.fillStyle = "#ffe3ec";
+  g.fillText("happy ", x0, 470);
+  g.fillText(" month", x0 + wA + oneW, 470);
+  // hand-drawn "1" so it always looks like a clear number one
+  g.save();
+  g.translate(x0 + wA + 4, 492);
+  g.transform(1, 0, -0.2, 1, 0, 0);
+  g.strokeStyle = "#ffe3ec"; g.lineJoin = "miter"; g.lineCap = "butt";
+  g.lineWidth = 9;
+  g.beginPath(); g.moveTo(17, 0); g.lineTo(17, -50); g.lineTo(3, -38); g.stroke();
+  g.lineWidth = 7;
+  g.beginPath(); g.moveTo(3, -2); g.lineTo(31, -2); g.stroke();
+  g.restore();
+  g.textAlign = "center";
+  g.fillStyle = "#ff7aa8";
+  g.font = "italic bold 92px Georgia, 'Times New Roman', serif";
+  g.fillText(TEXT2, 300, 568);
+}
+
+/* ===================== SAMPLE SCENES INTO TARGETS ===================== */
+function sample(drawFn, brighten, pool = false) {
+  drawFn(octx);
+  const data = octx.getImageData(0, 0, W, H).data, out = [];
+  const offs = pool ? [-2, 0, 2] : [0];             // pool = look at 3x3 points per cell
+  for (let y = CELL / 2; y < H; y += CELL) for (let x = CELL / 2; x < W; x += CELL) {
+    let best = -1, bi = -1;
+    for (const oy of offs) for (const ox of offs) {
+      const i = (Math.floor(y + oy) * W + Math.floor(x + ox)) * 4;
+      if (data[i + 3] < 128) continue;
+      const l = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (l > best) { best = l; bi = i; }
+    }
+    if (bi < 0) continue;
+    const r = data[bi], g = data[bi + 1], b = data[bi + 2];
+    out.push({
+      tx: x, ty: y,
+      r: Math.min(255, r * brighten + 25), g: Math.min(255, g * brighten + 25), b: Math.min(255, b * brighten + 25),
+      lum: best / 255,
+      ph: rnd() * 6.28, delay: rnd(),
+    });
+  }
+  return shuffle(out);
+}
+
+const HEART = { x: 300, y: 470 };                 // center of the little heart (set by drawText)
+const env = sample(drawEnvelope, 1.15);
+const rose = sample(drawRose, 1.3, true);
+const txtMain = sample(g => drawText(g, false), 1.0);
+const txtHeart = sample(g => drawText(g, true), 1.0, true);
+txtHeart.forEach(p => { p.heart = true; });
+const txt = txtMain.concat(txtHeart);
+
+/* ===================== STATE ===================== */
+let start = performance.now();     // when the intro started
+let clickT = null;                 // when the letter was clicked (null = not yet)
+let BCX = 300, BCY = 300, maxDist = 1;   // where the fire starts
+let roseT = 2.2, textT = 5.0;      // seconds AFTER the click
+const mouse = { x: 480, y: 470, has: false, down: false };
+const trail = [];                  // purple characters following the cursor
+const ripples = [];                // click rings
+
+const CX = 300, CY = 290;                       // center the characters spiral around
+for (const p of env) {
+  p.rise = 50 + rnd() * 140; p.drift = (rnd() - 0.5) * 60; p.rn = rnd() * 14;
+  p.tr = Math.hypot(p.tx - CX, p.ty - CY); p.tth = Math.atan2(p.ty - CY, p.tx - CX);
+  p.sr = p.tr + 120 + rnd() * 320;              // start radius (outside the letter)
+  p.sth = p.tth + 2 + rnd() * 1.2;              // start angle (so they swirl in)
+  p.tl = ASSEMBLE * (1 + p.delay * 0.35);       // moment this character lands
+  p.seal = p.r > 200 && p.r - p.g > 100;        // part of the pink wax seal
+}
+const sparks = shuffle(env.slice()).slice(0, 260).map(p => ({
+  p, off: rnd() * 0.35, sv: 90 + rnd() * 170, sd: (rnd() - 0.5) * 50, ph: rnd() * 6.28, ch: "*.'`+"[Math.floor(rnd() * 5)],
+}));
+const glints = Array.from({ length: 16 }, () => ({ x: 40 + rnd() * 520, y: 100 + rnd() * 380, ph: rnd() * 6.28, sz: 6 + rnd() * 8, sp: 1 + rnd() * 1.2 }));
+for (const p of txt) { p.sx = p.tx + (rnd() - 0.5) * 140; p.sy = p.ty + 60 + rnd() * 140; p.delay = clamp(p.tx / W * 0.55 + rnd() * 0.2, 0, 0.75); }
+for (const p of rose) p.delay = rnd();
+const stars = Array.from({ length: 170 }, () => ({ x: rnd(), y: rnd(), ph: rnd() * 6.28, s: 1 + rnd() * 1.4 }));   // x,y = fraction of the screen
+
+const hearts = Array.from({ length: 12 }, () => ({ x: 190 + rnd() * 220, per: 5 + rnd() * 4, off: rnd() * 9, sz: 12 + rnd() * 10, sw: rnd() * 6.28 }));
+const fallPetals = Array.from({ length: 9 }, () => ({ x: 240 + rnd() * 120, per: 6 + rnd() * 4, off: rnd() * 10, sz: 6 + rnd() * 5, sw: rnd() * 6.28 }));
+
+// set the fire's starting point: it spreads outward from where you click
+function ignite(x, y) {
+  BCX = x; BCY = y; maxDist = 1;
+  for (const p of env) { p.dist = Math.hypot(p.tx - x, p.ty - y); maxDist = Math.max(maxDist, p.dist); }
+  for (const p of env) {
+    const ang = Math.atan2(p.ty - y, p.tx - x);
+    const noise = Math.sin(ang * 5 + 1) * 16 + Math.sin(ang * 11) * 9 + p.rn;
+    p.bt = clamp((p.dist + noise) / (maxDist + 20)) * BURN_DUR;
+  }
+  // rose pops out once the fire reaches the middle of the letter
+  roseT = clamp(Math.hypot(x - 300, y - 300) / (maxDist + 20) * BURN_DUR + 0.6, 1.2, 3.4);
+  textT = roseT + 2.8;
+}
+ignite(300, 300);
+
+/* ===================== SCREEN FITTING + INPUT (the purple cursor) ===================== */
+const view = { s: 1, ox: 0, oy: 0, dpr: 1 };
+let zoom = 0.9;                                    // 1 = scene fills the window height, smaller = smaller scene
+function resize() {
+  view.dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(innerWidth * view.dpr);          // real pixels -> crisp characters
+  canvas.height = Math.round(innerHeight * view.dpr);
+  view.s = Math.min(innerWidth / W, innerHeight / H) * zoom;
+  view.ox = (innerWidth - W * view.s) / 2;
+  view.oy = (innerHeight - H * view.s) / 2;
+}
+function setZoom(z) { zoom = clamp(z, 0.3, 1.6); resize(); }
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen();
+}
+addEventListener("resize", resize);
+document.addEventListener("fullscreenchange", () => { zoom = document.fullscreenElement ? 1 : 0.9; resize(); });
+addEventListener("keydown", e => {
+  if (e.key === "f" || e.key === "F") toggleFullscreen();
+  else if (e.key === "+" || e.key === "=") setZoom(zoom * 1.1);
+  else if (e.key === "-" || e.key === "_") setZoom(zoom / 1.1);
+  else if (e.key === "0") setZoom(0.9);
+});
+canvas.addEventListener("wheel", e => { e.preventDefault(); setZoom(zoom * (e.deltaY < 0 ? 1.08 : 1 / 1.08)); }, { passive: false });
+const bind = (id, fn) => document.getElementById(id).addEventListener("click", e => { fn(); if (e.currentTarget.blur) e.currentTarget.blur(); });
+bind("bMinus", () => setZoom(zoom / 1.1));
+bind("bPlus", () => setZoom(zoom * 1.1));
+bind("bFull", toggleFullscreen);
+resize();
+
+function setMouse(e) {
+  mouse.cx = e.clientX; mouse.cy = e.clientY;                  // screen position (for drawing the cursor)
+  mouse.x = (e.clientX - view.ox) / view.s;                    // scene position (for hit tests + particles)
+  mouse.y = (e.clientY - view.oy) / view.s;
+  mouse.has = true;
+}
+const inEnvelope = () => mouse.x > ENV.x0 && mouse.x < ENV.x1 && mouse.y > ENV.y0 && mouse.y < ENV.y1;
+
+canvas.addEventListener("pointermove", e => {
+  setMouse(e);
+  trail.push({ x: e.clientX, y: e.clientY, t: performance.now(), ch: GLYPHS[Math.floor(Math.random() * GLYPHS.length)] });
+  if (trail.length > 28) trail.shift();
+});
+canvas.addEventListener("pointerleave", () => { mouse.has = false; mouse.down = false; });
+canvas.addEventListener("pointerup", () => { mouse.down = false; });
+canvas.addEventListener("pointerdown", e => {
+  setMouse(e); mouse.down = true;
+  const now = performance.now(), t = (now - start) / 1000;
+  ripples.push({ x: mouse.cx, y: mouse.cy, t0: now });
+  if (clickT === null) {
+    // click the letter to unlock the burning animation
+    if (t > ASSEMBLE - 0.3 && inEnvelope()) { ignite(mouse.x, mouse.y); clickT = now; }
+  } else if ((now - clickT) / 1000 > textT + 3.2) {
+    // finished -> click anywhere to replay
+    start = now; clickT = null; ignite(300, 300);
+  }
+});
+
+/* ===================== DRAWING ===================== */
+let ox = 0, oy = 0, near = 0;
+function repel(x, y) {                 // cursor pushes characters away and tints them purple
+  ox = 0; oy = 0; near = 0;
+  if (!mouse.has) return;
+  const dx = x - mouse.x, dy = y - mouse.y, d2 = dx * dx + dy * dy;
+  if (d2 < MOUSE_RADIUS * MOUSE_RADIUS && d2 > 0.01) {
+    const d = Math.sqrt(d2), f = 1 - d / MOUSE_RADIUS;
+    near = f; ox = dx / d * f * f * 16; oy = dy / d * f * f * 16;
+  }
+}
+function put(ch, x, y, r, g, b, a) {
+  if (a <= 0.01) return;
+  repel(x, y); x += ox; y += oy;
+  if (near > 0) { r = lerp(r, 175, near * 0.75); g = lerp(g, 125, near * 0.75); b = lerp(b, 255, near * 0.75); }
+  ctx.fillStyle = `rgba(${r | 0},${g | 0},${b | 0},${a})`;
+  ctx.fillText(ch, x, y);
+}
+const rampCh = (lum, t, ph) => RAMP[Math.floor(clamp(lum + Math.sin(t * 3 + ph) * 0.07, 0, 0.999) * RAMP.length)];
+const flickerCh = (ch, t, ph) => Math.sin(t * 5 + ph * 7) > 0.985 ? GLYPHS[Math.floor((t * 9 + ph * 13) % GLYPHS.length)] : ch;
+
+// t = seconds since start, u = seconds since the click (-100 before the click)
+function hsl(h, sat, l) {
+  h = ((h % 360) + 360) % 360; sat /= 100; l /= 100;
+  const k = n => (n + h / 30) % 12, a = sat * Math.min(l, 1 - l);
+  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return [f(0) * 255, f(8) * 255, f(4) * 255];
+}
+
+// t = seconds since start, u = seconds since the click (-100 before the click)
+function drawEnvelopeParticles(t, u) {
+  const intro = clamp(t / 0.6);
+  for (const p of env) {
+    const dt = u - p.bt;
+    const a0 = ease(clamp(t / ASSEMBLE - p.delay * 0.35));
+
+    // spiral in from outside the letter
+    const rad = lerp(p.sr, p.tr, a0), ang = lerp(p.sth, p.tth, a0);
+    let x = CX + Math.cos(ang) * rad, y = CY + Math.sin(ang) * rad;
+
+    // neon colors in flight -> paper colors when landed, with a white flash on landing
+    const fl = 1 - clamp((a0 - 0.55) / 0.45);
+    const [hr, hg, hb] = hsl(270 + 70 * Math.sin(p.ph * 3 + t * 2), 100, 68);
+    let r = lerp(p.r, hr, fl), g = lerp(p.g, hg, fl), b = lerp(p.b, hb, fl);
+    const fh = clamp(1 - Math.abs(t - p.tl) / 0.45) * 0.8;
+    r = lerp(r, 255, fh); g = lerp(g, 245, fh); b = lerp(b, 230, fh);
+    let a = intro * (0.45 + 0.55 * a0);
+    let ch = a0 < 0.95 ? GLYPHS[Math.floor(t * 14 + p.ph * 20) % GLYPHS.length]
+                       : flickerCh(rampCh(p.lum, t, p.ph), t, p.ph);
+
+    if (dt < 0 && a0 > 0.99) {
+      const settle = clamp((t - p.tl) / 0.6);
+      // float: whole letter bobs gently
+      y += (Math.sin(t * 1.1) * 2.5 + Math.sin(t * 1.6 + p.tx * 0.025)) * settle;
+      // heartbeat in the wax seal
+      if (p.seal) {
+        const beat = 1 + 0.04 * Math.max(0, Math.sin(t * 3)) * settle;
+        x = 300 + (x - 300) * beat; y = 326 + (y - 326) * beat;
+        const glow = 0.12 * Math.max(0, Math.sin(t * 3)) * settle;
+        r = lerp(r, 255, glow); g = lerp(g, 200, glow); b = lerp(b, 215, glow);
+      }
+      // light sweep gliding across the paper
+      if (t > ASSEMBLE) {
+        const d = p.tx * 0.6 + p.ty * 0.4, c = ((t - ASSEMBLE) * 230) % 1000 - 150;
+        const gl = Math.exp(-Math.pow((d - c) / 40, 2)) * settle;
+        if (gl > 0.02) { r = lerp(r, 255, gl * 0.85); g = lerp(g, 250, gl * 0.85); b = lerp(b, 235, gl * 0.85); if (gl > 0.45) ch = "@"; }
+      }
+    }
+    if (dt > -0.6) {                                   // heating up before it burns
+      const h = clamp((dt + 0.6) / 0.6);
+      r = lerp(r, 255, h * 0.7); g = lerp(g, 140, h * 0.7); b = lerp(b, 30, h * 0.7);
+    }
+    if (dt > 0) {                                      // burning, then ash
+      const s = clamp(dt / 0.7);
+      if (s < 0.5) { const k = s / 0.5; r = 255; g = lerp(235, 120, k); b = lerp(160, 25, k); }
+      else { const k = (s - 0.5) / 0.5; r = lerp(255, 150, k); g = lerp(120, 30, k); b = lerp(25, 10, k); }
+      const v = clamp((dt - 0.15) / 2.4);
+      y -= easeOut(v) * p.rise;
+      x += Math.sin(dt * 2 + p.ph) * 8 * v + p.drift * v;
+      a *= 1 - v * v;
+      if (dt < 0.35) ch = "@"; else if (dt < 0.7) ch = "*"; else ch = (dt * 6 + p.ph) % 2 < 1 ? "." : "'";
+      if (v > 0.5) { const m = (v - 0.5) * 2; r = lerp(r, 90, m); g = lerp(g, 70, m); b = lerp(b, 70, m); }
+    }
+    put(ch, x, y, r, g, b, a);
+  }
+}
+
+// warm glow behind the letter
+function drawAura(t, u) {
+  const k = clamp((t - 1.5) / 2) * (1 - clamp(u / 2.5));
+  if (k <= 0) return;
+  const pulse = 0.8 + 0.2 * Math.sin(t * 1.5);
+  const gr = ctx.createRadialGradient(300, 300, 40, 300, 300, 330);
+  gr.addColorStop(0, `rgba(255,150,80,${0.16 * k * pulse})`);
+  gr.addColorStop(0.6, `rgba(190,90,255,${0.07 * k * pulse})`);
+  gr.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = gr; ctx.fillRect(-3000, -3000, 6600, 6600);
+}
+
+// twinkling star glints around the letter
+function drawGlints(t, u) {
+  const k = clamp((t - ASSEMBLE + 0.5) / 1) * (1 - clamp(u / 1));
+  if (k <= 0) return;
+  ctx.save(); ctx.lineCap = "round";
+  for (const s of glints) {
+    const tw = Math.pow(Math.max(0, Math.sin(t * s.sp + s.ph)), 3);
+    if (tw < 0.03) continue;
+    const L = s.sz * tw;
+    ctx.strokeStyle = `rgba(255,236,205,${tw * k})`; ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(s.x - L, s.y); ctx.lineTo(s.x + L, s.y);
+    ctx.moveTo(s.x, s.y - L); ctx.lineTo(s.x, s.y + L);
+    ctx.stroke();
+    ctx.lineWidth = 1; ctx.beginPath();
+    ctx.moveTo(s.x - L * 0.5, s.y - L * 0.5); ctx.lineTo(s.x + L * 0.5, s.y + L * 0.5);
+    ctx.moveTo(s.x - L * 0.5, s.y + L * 0.5); ctx.lineTo(s.x + L * 0.5, s.y - L * 0.5);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// sparks flying up from the burning edge
+function drawSparks(u) {
+  if (u < 0) return;
+  for (const sp of sparks) {
+    const dt = u - sp.p.bt - sp.off;
+    if (dt < 0 || dt > 1.5) continue;
+    const k = dt / 1.5;
+    const x = sp.p.tx + Math.sin(dt * 4 + sp.ph) * 10 + sp.sd * dt, y = sp.p.ty - dt * sp.sv;
+    ctx.fillStyle = `rgba(255,${(lerp(240, 90, k)) | 0},${(lerp(150, 15, k)) | 0},${1 - k})`;
+    ctx.fillText(sp.ch, x, y);
+  }
+}
+
+function drawBurnGlow(u) {
+  const k = u / BURN_DUR;
+  if (k <= -0.1 || k >= 1.15) return;
+  const R = clamp(k, 0, 1.1) * (maxDist + 20);
+  const grad = ctx.createRadialGradient(BCX, BCY, Math.max(0, R - 55), BCX, BCY, R + 25);
+  grad.addColorStop(0, "rgba(255,90,10,0)");
+  grad.addColorStop(0.7, "rgba(255,120,20,0.22)");
+  grad.addColorStop(1, "rgba(255,60,0,0)");
+  ctx.save();
+  ctx.beginPath(); ctx.rect(ENV.x0 - 10, ENV.y0 - 10, ENV.x1 - ENV.x0 + 20, ENV.y1 - ENV.y0 + 20); ctx.clip();
+  ctx.globalAlpha = 1 - clamp((k - 0.9) / 0.25);
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+}
+
+function drawRoseParticles(t, u) {
+  const OX = 300, OY = 300;                          // the rose bursts out of the middle of the letter
+  for (const p of rose) {
+    const kk = clamp((u - roseT) / 1.6 - p.delay * 0.3);
+    if (kk <= 0) continue;
+    const e = easeOutBack(kk);
+    // bloom outward while swirling
+    const dx = (p.tx - OX) * e, dy = (p.ty - OY) * e;
+    const rot = -1.5 * (1 - kk) * (1 - kk), cs = Math.cos(rot), sn = Math.sin(rot);
+    let x = OX + dx * cs - dy * sn, y = OY + dx * sn + dy * cs;
+
+    // hot gold -> real colors, with a white flash at the very start
+    const m = clamp(kk * 1.4), pulse = 0.93 + 0.07 * Math.sin(t * 2.5 + p.ph);
+    let r = lerp(255, p.r * pulse, m), g = lerp(215, p.g * pulse, m), b = lerp(140, p.b * pulse, m);
+    const flash = (1 - clamp(kk * 1.5)) * 0.85;
+    r = lerp(r, 255, flash); g = lerp(g, 240, flash); b = lerp(b, 220, flash);
+    let ch = kk < 0.9 ? GLYPHS[Math.floor(t * 14 + p.ph * 20) % GLYPHS.length]
+                      : flickerCh(rampCh(p.lum, t, p.ph), t, p.ph);
+
+    if (kk >= 1) {
+      const w = clamp((p.ty - 215) / 190);                           // stem and leaves sway
+      x += Math.sin(t * 1.3 + p.ty * 0.012) * 3.5 * w;
+      if (p.ty < 275) {                                              // the bloom beats like a heart
+        const beat = 1 + 0.022 * Math.max(0, Math.sin(t * 2.6));
+        x = 300 + (x - 300) * beat; y = 150 + (y - 150) * beat;
+      }
+      const d = p.tx * 0.6 + p.ty * 0.4, c = ((u - roseT - 2) * 250) % 1200 - 250;   // light sweep
+      const gl = Math.exp(-Math.pow((d - c) / 38, 2));
+      if (gl > 0.02) { r = lerp(r, 255, gl * 0.8); g = lerp(g, 225, gl * 0.8); b = lerp(b, 230, gl * 0.8); if (gl > 0.5) ch = "@"; }
+      if (Math.sin(t * 6 + p.ph * 13) > 0.993) { r = g = b = 255; ch = "@"; }    // random twinkle
+    }
+    put(ch, x, y, r, g, b, clamp(kk * 4));
+  }
+}
+
+// soft flash when the rose appears
+function drawShock(u) {
+  const f = clamp(1 - (u - roseT) / 0.5);
+  if (u < roseT || f <= 0) return;
+  ctx.fillStyle = `rgba(255,190,205,${0.16 * f})`;
+  ctx.fillRect(-3000, -3000, 6600, 6600);
+}
+
+// pink glow behind the bloom
+function drawRoseAura(t, u) {
+  const k = clamp((u - roseT) / 1.5);
+  if (k <= 0) return;
+  const pulse = 0.8 + 0.2 * Math.sin(t * 2.6);
+  const gr = ctx.createRadialGradient(300, 150, 20, 300, 150, 230);
+  gr.addColorStop(0, `rgba(255,50,90,${0.24 * k * pulse})`);
+  gr.addColorStop(0.6, `rgba(170,40,200,${0.08 * k * pulse})`);
+  gr.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = gr; ctx.fillRect(-3000, -3000, 6600, 6600);
+}
+
+// hearts float up, petals drift down
+function drawFloaters(t, u) {
+  const k = clamp((u - roseT - 2.5) / 1.5);
+  if (k <= 0) return;
+  ctx.save(); ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (const h of hearts) {
+    const tt = ((t + h.off) % h.per) / h.per;
+    ctx.font = `${h.sz}px sans-serif`;
+    ctx.fillStyle = `rgba(255,85,125,${Math.sin(tt * Math.PI) * 0.8 * k})`;
+    ctx.fillText("\u2665", h.x + Math.sin(tt * 8 + h.sw) * 18, 290 - tt * 270);
+  }
+  for (const p of fallPetals) {
+    const tt = ((t + p.off) % p.per) / p.per;
+    const x = p.x + Math.sin(tt * 5 + p.sw) * 40 + tt * 30, y = 170 + tt * 260;
+    ctx.fillStyle = `rgba(225,35,65,${Math.sin(tt * Math.PI) * 0.85 * k})`;
+    ctx.beginPath(); ctx.ellipse(x, y, p.sz, p.sz * 0.55, tt * 8 + p.sw, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = `rgba(255,150,165,${Math.sin(tt * Math.PI) * 0.7 * k})`; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawTextParticles(t, u) {
+  // double "lub-dub" heartbeat
+  const ph = t * 3.2;
+  const beat = Math.min(1, Math.pow(Math.max(0, Math.sin(ph)), 8) + 0.55 * Math.pow(Math.max(0, Math.sin(ph - 0.9)), 8));
+  const sc = 1 + 0.14 * beat;
+  for (const p of txt) {
+    const k = ease(clamp((u - textT) / 2.2 - p.delay));
+    if (k <= 0) continue;
+    const sh = 0.92 + 0.08 * Math.sin(t * 3 + p.ph);
+    let x = lerp(p.sx, p.tx, k), y = lerp(p.sy, p.ty, k);
+    let r = p.r * sh, g = p.g * sh, b = p.b * sh;
+    if (p.heart && k >= 1) {
+      x = HEART.x + (x - HEART.x) * sc; y = HEART.y + (y - HEART.y) * sc;
+      r = lerp(r, 255, beat * 0.5); g = lerp(g, 160, beat * 0.4); b = lerp(b, 180, beat * 0.4);
+    }
+    put(flickerCh(rampCh(p.lum, t, p.ph), t, p.ph), x, y, r, g, b, k);
+  }
+}
+
+// little twinkles next to the heart
+function drawHeartGlints(t, u) {
+  const k = clamp((u - textT - 2) / 1);
+  if (k <= 0) return;
+  ctx.save(); ctx.lineCap = "round";
+  for (const [dx, dy, ph] of [[34, -30, 0], [-12, -38, 2.1], [40, 12, 4.2]]) {
+    const tw = Math.pow(Math.max(0, Math.sin(t * 1.8 + ph)), 3);
+    if (tw < 0.03) continue;
+    const x = HEART.x + dx, y = HEART.y + dy, L = 9 * tw;
+    ctx.strokeStyle = `rgba(255,225,230,${tw * k})`; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.moveTo(x - L, y); ctx.lineTo(x + L, y); ctx.moveTo(x, y - L); ctx.lineTo(x, y + L); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawRays(t, u) {
+  const k = clamp((u - roseT - 1.2) / 1.8);
+  if (k <= 0) return;
+  const cx = 300, cy = 150;
+  for (let row = 0; row < 28; row++) {
+    const y = 20 + row * 11, dy = Math.abs(y - cy);
+    const reach = 40 + (250 - dy * 0.7) * (0.6 + 0.4 * Math.sin(t * 1.2 + row));
+    const flick = 0.35 + 0.65 * Math.abs(Math.sin(t * 1.8 + row * 1.3));
+    for (const dir of [-1, 1]) for (let s = 80; s < reach + 80; s += CELL) {
+      const f = 1 - (s - 80) / (reach + 1);
+      ctx.fillStyle = `rgba(80,140,255,${clamp(f * flick * k * 0.85)})`;
+      ctx.fillText(((s / CELL) | 0) % 5 === 0 ? "+" : "-", cx + dir * s, y);
+    }
+  }
+}
+
+function drawStars(t) {
+  const d = view.dpr;
+  ctx.setTransform(d, 0, 0, d, 0, 0);
+  for (const st of stars) {
+    ctx.fillStyle = `rgba(255,255,255,${(0.2 + 0.7 * Math.abs(Math.sin(t * 1.2 + st.ph))) * 0.8})`;
+    ctx.fillRect(st.x * innerWidth, st.y * innerHeight, st.s, st.s);
+  }
+}
+
+function drawHints(t, u, now) {
+  ctx.save();
+  ctx.font = "14px Consolas, 'Courier New', monospace";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  if (clickT === null && t > ASSEMBLE) {
+    const a = clamp((t - ASSEMBLE) / 0.8) * (0.55 + 0.45 * Math.sin(t * 3));
+    ctx.fillStyle = `rgba(184,155,255,${a})`;
+    ctx.fillText(">> click the letter to open it <<", 300, 500);
+  } else if (clickT !== null && u > textT + 3.2) {
+    ctx.fillStyle = `rgba(184,155,255,${clamp((u - textT - 3.2) / 1) * 0.5})`;
+    ctx.fillText("click to replay", 300, 622);
+  }
+  ctx.restore();
+}
+
+function drawCursor(t, now) {
+  const d = view.dpr;
+  ctx.setTransform(d, 0, 0, d, 0, 0);               // screen pixels
+  ctx.save();
+  ctx.font = "bold 11px Consolas, monospace"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (let i = trail.length - 1; i >= 0; i--) {
+    const age = Math.max(0, (now - trail[i].t) / 1000);
+    if (age > 0.6) { trail.splice(i, 1); continue; }
+    ctx.fillStyle = `rgba(175,125,255,${(1 - age / 0.6) * 0.8})`;
+    ctx.fillText(trail[i].ch, trail[i].x + 6, trail[i].y + 10 + age * 14);
+  }
+  for (let i = ripples.length - 1; i >= 0; i--) {
+    const age = Math.max(0, (now - ripples[i].t0) / 1000);
+    if (age > 0.7) { ripples.splice(i, 1); continue; }
+    ctx.strokeStyle = `rgba(175,125,255,${0.8 * (1 - age / 0.7)})`; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(ripples[i].x, ripples[i].y, Math.max(0, easeOut(clamp(age / 0.7)) * 55), 0, Math.PI * 2); ctx.stroke();
+  }
+  const idle = !mouse.has;
+  const x = idle ? view.ox + (480 + Math.sin(t) * 6) * view.s : mouse.cx;
+  const y = idle ? view.oy + (470 + Math.cos(t * 0.8) * 5) * view.s : mouse.cy;
+  const hover = !idle && clickT === null && t > ASSEMBLE - 0.3 && inEnvelope();
+  const sc = (hover ? 1.2 : 1) * (mouse.down ? 0.88 : 1) * 1.15;
+  ctx.translate(x, y); ctx.scale(sc, sc);
+  ctx.shadowColor = "rgba(154,107,255,0.95)"; ctx.shadowBlur = hover ? 22 : 12;
+  ctx.fillStyle = PURPLE; ctx.strokeStyle = "#e5d8ff"; ctx.lineWidth = 1.5; ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(0, 0); ctx.lineTo(0, 22); ctx.lineTo(5.5, 17.5); ctx.lineTo(9.5, 26);
+  ctx.lineTo(13.5, 24.2); ctx.lineTo(9.6, 15.8); ctx.lineTo(17, 15.5); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  ctx.restore();
+}
+
+/* ===================== MAIN LOOP ===================== */
+function frame() {
+  const now = performance.now();
+  const t = (now - start) / 1000;
+  const u = clickT === null ? -100 : (now - clickT) / 1000;
+  const d = view.dpr;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  drawStars(t);                                                     // starfield fills the whole screen
+  ctx.setTransform(d * view.s, 0, 0, d * view.s, d * view.ox, d * view.oy);   // scene: scaled + centered
+  ctx.font = `bold ${CELL + 2}px Consolas, "Courier New", monospace`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  drawAura(t, u);
+  drawBurnGlow(u);
+  drawRoseAura(t, u);
+  drawRays(t, u);
+  drawEnvelopeParticles(t, u);
+  drawSparks(u);
+  drawShock(u);
+  drawRoseParticles(t, u);
+  drawTextParticles(t, u);
+  drawFloaters(t, u);
+  drawHeartGlints(t, u);
+  drawGlints(t, u);
+  drawHints(t, u, now);
+  drawCursor(t, now);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
